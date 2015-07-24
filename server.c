@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Socketing: */
 #include <netinet/in.h>
@@ -21,6 +22,7 @@ bool isGoodSocket(SocketHandle handle);
 SocketHandle setupAcceptingSocket(TCPPort port);
 SocketHandle acceptClients(SocketHandle accepting_socket);
 void serveClient(SocketHandle client_socket);
+void parseAndReact(SocketHandle client_socket, char* to_parse);
 
 
 int
@@ -30,7 +32,6 @@ main(int argc, char* argv[])
     SocketHandle accepting_socket = setupAcceptingSocket(port);
     SocketHandle client_socket = acceptClients(accepting_socket);
     serveClient(client_socket);
-    close(client_socket);
     close(accepting_socket);
     return 0;
 }
@@ -61,6 +62,10 @@ setupAcceptingSocket(TCPPort port)
         return -2; // TODO
     }
 
+    int reuse = 1;
+    setsockopt(accepting_socket, SOL_SOCKET,
+               SO_REUSEADDR, (char*) &reuse, sizeof(int));
+
     if (!~bind(accepting_socket,
                (struct sockaddr*) &servaddr,
                sizeof(servaddr)))
@@ -80,14 +85,52 @@ setupAcceptingSocket(TCPPort port)
 void
 serveClient(SocketHandle client_socket)
 {
-    const size_t buff_len = 1024;
-    int n;
-    char buff[ buff_len ] = {0};
-    while ((n = recv(client_socket, buff, buff_len, 0)))
+    struct {
+        const size_t recv;
+        size_t pars;
+        ssize_t received;
+        size_t buffered;
+    } sizes = {1024, 4096, 0, 0};
+    struct {
+        char* recv;
+        char* pars;
+    } buffers = {
+        malloc(sizes.recv),
+        malloc(sizes.pars)
+    };
+    char* to_parse;
+    while ((sizes.received = recv(client_socket, buffers.recv,
+                                  sizes.recv   , 0           )) > 0)
     {
-        buff[ n ] = '\0';
-        printf("%s", buff);
+        buffers.recv[ sizes.received ] = '\0';
+        if (strstr(buffers.recv, "\r\n\r\n"))
+        {
+            if (!sizes.buffered)
+            {
+                to_parse = buffers.recv;
+            }
+            else
+            {
+                if ((sizes.buffered + sizes.received) > sizes.pars)
+                {
+                    sizes.pars <<= 1;
+                    buffers.pars = realloc(buffers.pars, sizes.pars);
+                    to_parse = strcat(buffers.pars, buffers.recv);
+                }
+            }
+            parseAndReact(client_socket, to_parse);
+            sizes.buffered = 0;
+            break;
+        }
+        if ((sizes.buffered + sizes.received) > sizes.pars)
+        {
+            sizes.pars <<= 1;
+            buffers.pars = realloc(buffers.pars, sizes.pars);
+        }
+        strcat(buffers.pars, buffers.recv);
+        sizes.buffered += sizes.received;
     }
+    close(client_socket);
 }
 
 
@@ -119,6 +162,24 @@ acceptClients(SocketHandle accepting_socket)
             return accepted_socket;
         }
     }
+}
+
+
+void
+parseAndReact(SocketHandle client_socket, char* to_parse)
+{
+    puts(to_parse);
+    char* get = strstr(to_parse, "\r\n"); *get = '\0';
+    puts(to_parse);
+    const char* resp = (
+        "HTTP/1.1 200 OK\r\n"
+        "Content-type: text/html; charset=utf-8\r\n\r\n"
+        "<!doctype html>                             \n"
+        "<html>                                      \n"
+        "<head> <title>=^.^=</title> </head>         \n"
+        "<body><p>really fantastic!</p></body></html>\n"
+    );
+    send(client_socket, resp, strlen(resp) - 1, 0);
 }
 
 
